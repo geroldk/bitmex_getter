@@ -1,5 +1,5 @@
 [package]
-name = "bitstamp2_rgetter"
+name = "bitmex_rgetter"
 version = "0.1.0"
 authors = ["gerold"]
 edition = "2018"

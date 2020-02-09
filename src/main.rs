@@ -6,7 +6,7 @@ use slog::{slog_o, Duplicate};
 use slog_term;
 use slog_async;
 use slog_stdlog;
-use slog_scope::{info,error, warn, debug};
+use slog_scope::{info, error, warn, debug};
 use slog::Drain;
 use slog_journald;
 use slog_envlogger;
@@ -18,7 +18,7 @@ use std::path::Path;
 use ws::{connect, CloseCode, Error, Handler, Handshake, Message, Result, Sender};
 
 
-const URL: &str = "wss://ws.bitstamp.net/";
+const URL: &str = "wss://www.bitmex.com/realtime";
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TraidingPairs {
@@ -28,25 +28,23 @@ struct TraidingPairs {
 #[derive(Debug)]
 struct Symbol(String);
 
-struct Client<'a> {
+struct Client {
     out: Sender,
-    symbols: &'a [Symbol],
     fs_ts: Option<String>,
     file: Option<File>,
 }
 
-impl Client<'_> {
-    fn new(out: Sender, symbols: &[Symbol]) -> Client {
+impl Client {
+    fn new(out: Sender) -> Client {
         Client {
             out,
-            symbols,
             fs_ts: None,
             file: None,
         }
     }
 
     fn build_file_name(ts: &str) -> String {
-        let n = format!("data/bitstamp2-ws-{}.log", ts);
+        let n = format!("data/bitmex-ws-{}.log", ts);
         info!("{}", n);
         n
     }
@@ -95,43 +93,31 @@ impl Client<'_> {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct SubscribeMessageData {
-    channel: String,
+const TOPICS: [&str; 8] = [
+    "funding",
+    "instrument",
+    "insurance",
+    "liquidation",
+    "orderBookL2",
+    "publicNotifications",
+    "settlement",
+    "trade"];
+
+fn subscribe_message(topic: &&str) -> String {
+    format!("{{\"op\": \"subscribe\", \"args\": [\"{}\"]}}", topic)
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct SubscribeMessage {
-    event: String,
-    data: SubscribeMessageData,
-}
 
-const ALL_SUBSCRIPTION_TOPICS: [&str; 5] = [
-    "live_trades",
-    "live_orders",
-    "order_book",
-    "detail_order_book",
-    "diff_order_book",
-];
-
-impl Handler for Client<'_> {
+impl Handler for Client {
     fn on_open(&mut self, shake: Handshake) -> Result<()> {
         if let Some(addr) = shake.remote_addr()? {
             info!("Connection with {} now open", addr);
         }
-        for topic in ALL_SUBSCRIPTION_TOPICS.iter() {
-            for symbol in self.symbols.iter() {
-                let m = SubscribeMessage {
-                    event: "bts:subscribe".to_owned(),
-                    data: SubscribeMessageData {
-                        channel: format!("{}_{}", topic, symbol.0),
-                    },
-                };
-
-                let j = serde_json::to_string(&m).unwrap();
-                self.out.send(Message::Text(j))?;
-            }
+        for topic in TOPICS.iter() {
+            let m = subscribe_message(topic);
+            self.out.send(m)?;
         }
+
         info!("subscribed");
         Ok(())
     }
@@ -165,7 +151,7 @@ fn setup_logging() -> slog_scope::GlobalLoggerGuard {
     //let drain_term = slog_async::Async::new(slog_term::FullFormat::new(decorator).build().fuse()).build().fuse();
     let drain = slog_async::Async::new(slog_journald::JournaldDrain.fuse()).build().fuse();
     //let drain = Duplicate::new(drain_term, drain).fuse();
-   // let drain = slog_envlogger::new( drain).fuse();
+    // let drain = slog_envlogger::new( drain).fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
     let logger = slog::Logger::root(drain, slog_o!("version" => env!("CARGO_PKG_VERSION")));
     let _scope_guard = slog_scope::set_global_logger(logger);
@@ -175,17 +161,8 @@ fn setup_logging() -> slog_scope::GlobalLoggerGuard {
 
 fn main() {
     let _logging_guard = setup_logging();
-    let resp = ureq::get("https://www.bitstamp.net/api/v2/trading-pairs-info/").call();
+    info!("{}", "INFO"; "APP" => "BITMEX");
+    connect(URL, |out| Client::new(out)).unwrap();
 
-    // .ok() tells if response is 200-299.
-    if resp.ok() {
-        let j: Vec<TraidingPairs> = serde_json::from_reader(resp.into_reader()).unwrap();
-        //println!("{:?}",j);
-        let jj: Vec<Symbol> = j.into_iter().map(|x| Symbol(x.url_symbol)).collect();
-        info!("{}", "INFO"; "APP" => "BITSTAMP2");
-        debug!("{:?}", jj);
-        connect(URL, |out| Client::new(out, &jj)).unwrap();
-    }
     std::process::exit(1);
-
 }
